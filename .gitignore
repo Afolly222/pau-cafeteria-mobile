@@ -1,5 +1,10 @@
 # Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
 
+# Supabase environment variables
+.env
+.env.*
+
+
 # dependencies
 node_modules/
 
@@ -41,3 +46,10 @@ example
 # generated native folders
 /ios
 /android
+
+# Temporary code backups
+*.bak
+*.before-fix
+
+# Temporary repair scripts
+fix-imports.ps1
