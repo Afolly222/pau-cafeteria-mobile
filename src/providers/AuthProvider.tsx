@@ -5,11 +5,13 @@ import React, {
   createContext,
   useContext,
   useEffect,
+  useMemo,
   useState,
 } from 'react';
 
+import { AppState } from 'react-native';
+
 import { isPauEmail, supabase } from '../lib/supabase';
-console.log('SUPABASE IMPORT CHECK:', typeof supabase);
 
 type AuthContextType = {
   session: Session | null;
@@ -27,15 +29,37 @@ export function AuthProvider({
 }: {
   children: React.ReactNode;
 }) {
-  const [session, setSession] = useState<Session | null>(null);
+  const [session, setSession] = useState<Session | null>(
+    null
+  );
+
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let mounted = true;
+    let initialSessionLoaded = false;
 
-    async function loadSession() {
+    // Listen for authentication changes.
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(
+      (_event, nextSession) => {
+        if (!mounted) return;
+
+        setSession(nextSession);
+
+        // Wait for the initial session restoration
+        // before allowing authentication redirects.
+        if (initialSessionLoaded) {
+          setLoading(false);
+        }
+      }
+    );
+
+    async function restoreSession() {
       try {
-        const { data, error } = await supabase.auth.getSession();
+        const { data, error } =
+          await supabase.auth.getSession();
 
         if (error) {
           throw error;
@@ -45,42 +69,56 @@ export function AuthProvider({
           setSession(data.session);
         }
       } catch (error) {
-        console.warn('Unable to restore session:', error);
-
-        if (mounted) {
-          setSession(null);
-        }
+        // A temporary failure should not automatically
+        // erase an existing saved authentication session.
+        console.warn(
+          'Unable to restore authentication session:',
+          error
+        );
       } finally {
+        initialSessionLoaded = true;
+
         if (mounted) {
           setLoading(false);
         }
       }
     }
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(
-      (_event, nextSession: Session | null) => {
-        if (!mounted) return;
+    restoreSession();
 
-        setSession(nextSession);
-        setLoading(false);
-      }
-    );
+    // Refresh tokens only while the app is active.
+    const appStateSubscription =
+      AppState.addEventListener('change', (state) => {
+        if (state === 'active') {
+          supabase.auth.startAutoRefresh();
+        } else {
+          supabase.auth.stopAutoRefresh();
+        }
+      });
 
-    loadSession();
+    if (AppState.currentState === 'active') {
+      supabase.auth.startAutoRefresh();
+    }
 
     return () => {
       mounted = false;
       subscription.unsubscribe();
+      appStateSubscription.remove();
+      supabase.auth.stopAutoRefresh();
     };
   }, []);
 
-  const authenticated = Boolean(
-    session?.user.email_confirmed_at &&
-    session.user.email &&
-    isPauEmail(session.user.email)
-  );
+  const authenticated = useMemo(() => {
+    if (!session?.user) return false;
+
+    const email = session.user.email;
+
+    return Boolean(
+      email &&
+      session.user.email_confirmed_at &&
+      isPauEmail(email)
+    );
+  }, [session]);
 
   async function signOut() {
     const { error } = await supabase.auth.signOut();
@@ -92,15 +130,18 @@ export function AuthProvider({
     setSession(null);
   }
 
+  const value = useMemo(
+    () => ({
+      session,
+      loading,
+      authenticated,
+      signOut,
+    }),
+    [session, loading, authenticated]
+  );
+
   return (
-    <AuthContext.Provider
-      value={{
-        session,
-        loading,
-        authenticated,
-        signOut,
-      }}
-    >
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );
